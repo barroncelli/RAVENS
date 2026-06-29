@@ -28,6 +28,9 @@
 # as acceleration data is not useful.
 
 
+### ADD: rho, last update bme1, last update bme2, last update bno, power, speed
+### also update speed for multiple magnets
+
 import csv
 import time
 import os
@@ -98,12 +101,15 @@ R = np.array([[ 9.99312675e-01,  4.33680869e-19, -3.70699121e-02],
 last_a = np.array([0,0,9.71]) # coords for my stationary bno
 last_g = np.array([0,0,0])
 imulock = threading.Lock()
+last_imu_ping = time.monotonic()
 def imu_ping():
-	global last_a
-	global last_g
+	global last_a, last_g, last_imu_ping
 	# could add try/except to prevent i2c issue from derailing whole file
 	while True:
-		a = bno.acceleration
+                this_acc = bno.acceleration
+                if this_acc != a:
+                    last_imu_ping = time.monotonic()
+		a = this_acc
 		g = bno.gyro
 		if  a[0] is not None and g[0] is not None:
 					   # this occasional glitchy misread as None 
@@ -129,13 +135,14 @@ last_pbme = bme.pressure
 last_tbme = bme.temperature
 last_hbme = bme.humidity
 bmelock = threading.Lock()
+bme_last_ping = time.monotonic()
 def bme_ping():
-	global last_pbme
-	global last_tbme
-	global last_hbme
+	global last_pbme, last_tbme, last_hbme, bme_last_ping
 	counter = 0
 	while True:
 		pbme = float(bme.pressure) # pitot pressure
+		if pbme != last_pbme:
+                    bme_last_ping = time.monotonic()
 		counter += 1
 		with bmelock:
 			last_pbme = pbme
@@ -157,12 +164,15 @@ bag_bme._run_gas = False
 
 last_bag = 0
 baglock = threading.Lock()
+bag_last_ping = time.monotonic()
 def bag_ping():
-	global last_bag
+	global last_bag, bag_last_ping
 	while True:
 		pbag = float(bag_bme.pressure) # environmental pressure
 		with baglock:
-			last_bag = pbag
+                    if last_bag != pbag: # catches each new ping
+                        bag_last_ping = time.monotonic()
+                    last_bag = pbag
 		time.sleep(.001)
 bag_thread = threading.Thread(target=bag_ping, daemon=True)
 bag_thread.start()
@@ -194,7 +204,7 @@ class reedswitch:
 		self.switch = Button(gpioPin, pull_up=True, bounce_time=.01)
 		# can't be triggered twice within .01s
 		self.circumference = circumference
-		self.dist_per_dt = circumference
+		self.dist_per_dt = circumference / 4 ## 4 MAGNETS PER WHEEL HERE
 		self.recent = time.monotonic()
 		self._speed = 0.0 # float speed
 		self.switch.when_pressed = self.closed_alert
@@ -208,6 +218,9 @@ class reedswitch:
 		if d_t > d_t_threshold:
 			self._speed = 0.0 # if sensor hasn't triggered in a while
 		return self._speed
+	@property
+	def elapsed_since_ping:
+            return time.monotonic()-self.recent()
 	def closed_alert(self):
 		now = time.monotonic()
 		d_t = now - self.recent
@@ -224,10 +237,11 @@ instance = reedswitch(gpio_s, circum, min_speed)
 #
 power = 0 # before call is made from main csv logging loop
 powerlock = threading.Lock()
+last_pwr_ping = time.monotonic()
 def BLE_ping(pwm, data):
-	global power
+	global power, last_pwr_ping
 	new_power = struct.unpack('<h', data[2:4])[0] # '<' to read backwards, 
-										# H = hex b/c 2 bytes or 16 bit
+	last_pwr_ping = time.monotonic()				# H = hex b/c 2 bytes or 16 bit
 	with powerlock:
 		power = new_power
 		
@@ -264,7 +278,9 @@ with open(filepath, mode='a', newline = '') as csvfile:
 	fieldnames =  ['timestamp', 'pressure_bag', 'pressure_bme', 
 				'diff_pressure', 'v_wind_est', 'speed', 
 				'accel_x', 'accel_y', 'accel_z',
-				'gyro_x', 'gyro_y', 'gyro_z', 'power']
+				'gyro_x', 'gyro_y', 'gyro_z', 'power',
+                                'rho', 'since_bno', 'since_bag', 'since_bme',
+                               'since_speed', 'since_pwr']
 	writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 	
 	# headers at top of csv:
@@ -291,7 +307,9 @@ with open(filepath, mode='a', newline = '') as csvfile:
 			
 			with baglock:
 				pbag = last_bag
-				
+
+                        since_bag = time.monotonic() - bag_last_ping 
+			since_bme = time.monotonic() - bme_last_ping
 			pbag += delta_bme # pbme and pbag are offset by some amount found above
 			dp = 100 * (pbme-pbag) # hPa to Pa
 			
@@ -317,7 +335,7 @@ with open(filepath, mode='a', newline = '') as csvfile:
 			#
 			# end wind code
 			#
-			
+			since_imu = time.monotonic() - last_imu_ping
 			with imulock:
 				ax = last_a[0]
 				ay = last_a[1]
@@ -328,11 +346,13 @@ with open(filepath, mode='a', newline = '') as csvfile:
 			
 			# reedspeed code:
 			speed_now = instance.speed
+			elapsed = instance.elapsed_since_ping
 			# reedspeed done
 			
 			# power code:
 			with powerlock:
 				Pow = power
+			since_pwr = time.monotonic - last_pwr_ping
 			# power done
 			
 			
@@ -351,7 +371,13 @@ with open(filepath, mode='a', newline = '') as csvfile:
 				'gyro_x': f"{gx:.2f}",
 				'gyro_y': f"{gy:.2f}",
 				'gyro_z': f"{gz:.2f}",
-				'power': Pow # no rounding needed
+				'power': Pow, # no rounding needed
+                                'rho': f"{rho:.4f}" # rho is <2 so long decimal
+                                'since_imu': f"{since_imu:.2f}",
+                                'since_bag': f"{since_bag:.2f}",
+                                'since_bme': f"{since_bme:.2f}",
+                                'since_speed': f"{elapsed:.2f}",
+                                'since_pwr': f"{since)pwr:.2f}"
 			})
 			
 			if counter % 100 == 0:

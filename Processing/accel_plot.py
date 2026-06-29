@@ -2,10 +2,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-file = "/home/bcelli/Projects/RAVENS/Sensor Interfacing/full captures/qloop.csv"
+file = r"C:\Users\barro\Downloads\RAVENS-main\RAVENS-main\Sensor Interfacing\full captures\full_log_20260627-203114.csv"
+
 data = pd.read_csv(file)
+data = data[:135000]
 
 t = pd.to_datetime(data["timestamp"])
+
+s = t.size
+print(s)
 
 ax = data["accel_x"]
 ay = data["accel_y"]
@@ -14,15 +19,15 @@ az = data["accel_z"]
 amag = np.sqrt(ax**2+ay**2+az**2)
 
 # number of consecutive points desired
-consec = 20
+consec = 10
 # bounds
-margin = 1
+margin = .7
 center = 9.71
 lowerbound = center-margin
 upperbound = center+margin
 
 # grade deviance for a single timestep
-grade_dev = 2
+grade_dev = 5
 
 
 inrange = (amag >= lowerbound) & (amag <= upperbound) # bool array
@@ -66,4 +71,33 @@ plt.xlabel("Time")
 plt.ylabel("Road percent grade")
 plt.ylim(-10,10)
 plt.tight_layout()
+
+plt.figure()
+plt.scatter(t, ay, s=.1, color='black')
+plt.scatter(t, az, s=.1)
+
+plt.figure()
+plt.scatter(t, ax, s=.1, color='green')
 plt.show()
+
+
+
+
+binperiod = 2
+fs = 100
+
+samplesperblock = blockperiod*fs
+numsamples = speedgrav_azs.size
+remainder = numsamples % samplesperblock
+	
+if not remainder == 0: # only need to slice when a remainder exists
+	speedgrav_azs = speedgrav_azs[:-remainder] 
+	speeds = speeds[:-remainder]
+	#we need to calc speed per block
+	
+# azblocks has a block in each row
+azblocks = speedgrav_azs.reshape(-1, samplesperblock)
+
+
+
+
